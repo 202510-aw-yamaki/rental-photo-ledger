@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192" role="img" aria-label="賃貸写真台帳メーカー">
+  <rect width="192" height="192" rx="36" fill="#0f766e"/>
+  <path d="M42 56h108v88H42z" fill="#ffffff"/>
+  <path d="M58 72h76v16H58zM58 102h46v10H58zM58 122h62v10H58z" fill="#0f766e"/>
+  <circle cx="134" cy="116" r="18" fill="#2563eb"/>
+  <path d="M128 116h12M134 110v12" stroke="#ffffff" stroke-width="8" stroke-linecap="round"/>
+</svg>
