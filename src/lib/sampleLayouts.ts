@@ -1,5 +1,5 @@
 import fontkit from "@pdf-lib/fontkit";
-import notoSansJpUrl from "@fontsource/noto-sans-jp/files/noto-sans-jp-japanese-400-normal.woff?url";
+import notoSansJpUrl from "@fontsource/noto-sans-jp/files/noto-sans-jp-japanese-400-normal.woff2?url";
 import { PDFDocument, PDFPage, rgb, type PDFFont } from "pdf-lib";
 
 export type SampleLayoutType = "oneRoom" | "oneK" | "twoLdk";
@@ -161,7 +161,7 @@ function pin(label: string, placeName: string, x: number, y: number): SamplePinS
 async function loadJapaneseFont(pdfDoc: PDFDocument): Promise<PDFFont> {
   const response = await fetch(notoSansJpUrl);
   const bytes = await response.arrayBuffer();
-  return pdfDoc.embedFont(bytes);
+  return pdfDoc.embedFont(bytes, { subset: true });
 }
 
 function drawHeader(page: PDFPage, font: PDFFont, layout: SampleLayoutDefinition) {
