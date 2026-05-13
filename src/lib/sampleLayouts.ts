@@ -1,5 +1,5 @@
 import fontkit from "@pdf-lib/fontkit";
-import notoSansJpUrl from "@fontsource/noto-sans-jp/files/noto-sans-jp-0-400-normal.woff?url";
+import notoSansJpUrl from "@fontsource/noto-sans-jp/files/noto-sans-jp-japanese-400-normal.woff?url";
 import { PDFDocument, PDFPage, rgb, type PDFFont } from "pdf-lib";
 
 export type SampleLayoutType = "oneRoom" | "oneK" | "twoLdk";
