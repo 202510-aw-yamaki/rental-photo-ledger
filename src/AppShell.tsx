@@ -19,7 +19,6 @@ import {
   addPhotoRecord,
   addPin,
   createProperty,
-  createSampleProperty,
   deletePhotoRecord,
   deletePin,
   deleteProperty,
@@ -32,6 +31,8 @@ import {
 import { compressImage } from "./lib/images";
 import { buildLedgerFileName, formatDateTime, generateLedgerPdf } from "./lib/ledgerPdf";
 import { getPdfPageCount, renderFirstPdfPage } from "./lib/pdfPreview";
+import { createSamplePropertyWithLayout } from "./lib/sampleData";
+import { SAMPLE_LAYOUTS, type SampleLayoutType } from "./lib/sampleLayouts";
 import type { ChecklistItem, FloorPlan, FloorPlanPin, PhotoCategory, PhotoRecord, Property, PropertyBundle } from "./types";
 
 type SectionId = "overview" | "floor" | "photos" | "checklist" | "export";
@@ -124,13 +125,13 @@ export function AppShell() {
     }, "物件を作成しました。");
   };
 
-  const handleSample = async () => {
+  const handleSample = async (layoutType: SampleLayoutType) => {
     await runAction(async () => {
-      const property = await createSampleProperty();
+      const property = await createSamplePropertyWithLayout(layoutType);
       await refreshProperties();
       setSelectedPropertyId(property.id);
-      setSection("overview");
-    }, "サンプル物件を作成しました。");
+      setSection("floor");
+    }, "サンプル間取りを作成しました。");
   };
 
   const handleDeleteProperty = async () => {
@@ -332,7 +333,7 @@ function PropertyCreator({
   disabled
 }: {
   onCreate: (input: { name: string; moveInDate: string; moveOutDate: string }) => Promise<void>;
-  onSample: () => Promise<void>;
+  onSample: (layoutType: SampleLayoutType) => Promise<void>;
   disabled: boolean;
 }) {
   const [name, setName] = useState("");
@@ -387,16 +388,8 @@ function PropertyCreator({
           <Plus aria-hidden size={20} />
           作成する
         </button>
-        <button
-          type="button"
-          className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-md border border-ledger-line bg-white px-4 font-bold text-ledger-primary disabled:opacity-50"
-          onClick={() => void onSample()}
-          disabled={disabled}
-        >
-          <Plus aria-hidden size={18} />
-          サンプルを作成
-        </button>
       </form>
+      <SampleLayoutButtons onSample={onSample} disabled={disabled} compact />
     </section>
   );
 }
@@ -432,6 +425,33 @@ function PropertyList({
         ))}
       </div>
     </section>
+  );
+}
+
+function SampleLayoutButtons({
+  onSample,
+  disabled,
+  compact = false
+}: {
+  onSample: (layoutType: SampleLayoutType) => Promise<void>;
+  disabled?: boolean;
+  compact?: boolean;
+}) {
+  return (
+    <div className={compact ? "mt-4 space-y-2" : "mt-5 grid gap-3 sm:grid-cols-3"}>
+      {SAMPLE_LAYOUTS.map((layout) => (
+        <button
+          type="button"
+          key={layout.type}
+          className="min-h-12 rounded-md border border-ledger-line bg-white px-3 py-3 text-left font-bold text-ledger-primary hover:bg-teal-50 disabled:opacity-50"
+          onClick={() => void onSample(layout.type)}
+          disabled={disabled}
+        >
+          <span className="block">{layout.title}</span>
+          <span className="mt-1 block text-xs font-normal leading-5 text-ledger-muted">{layout.description}</span>
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -1104,21 +1124,14 @@ function ExportSection({
   );
 }
 
-function EmptyState({ onSample }: { onSample: () => Promise<void> }) {
+function EmptyState({ onSample }: { onSample: (layoutType: SampleLayoutType) => Promise<void> }) {
   return (
     <section className="rounded-lg border border-ledger-line bg-white p-8 text-center">
       <h2 className="text-2xl font-bold">最初の記録を作成します</h2>
       <p className="mt-3 leading-7 text-ledger-muted">
-        物件を作成すると、間取りPDF、番号ピン、写真、チェックリスト、PDF台帳出力を使えるようになります。
+        物件を作成するか、一般的な間取りサンプルから試せます。サンプルには間取りPDFと番号ピンが入っています。
       </p>
-      <button
-        type="button"
-        className="mt-5 inline-flex min-h-12 items-center justify-center gap-2 rounded-md border border-ledger-line px-4 font-bold text-ledger-primary"
-        onClick={() => void onSample()}
-      >
-        <Plus aria-hidden size={20} />
-        サンプルで試す
-      </button>
+      <SampleLayoutButtons onSample={onSample} />
     </section>
   );
 }
