@@ -50,6 +50,7 @@ export type PhotoCategory =
 export type PhotoRecord = EntityBase & {
   propertyId: string;
   pinId: string;
+  targetName: string;
   category: PhotoCategory;
   comment: string;
   imageBlob: Blob;
@@ -59,6 +60,7 @@ export type PhotoRecord = EntityBase & {
 
 export type ChecklistItem = EntityBase & {
   propertyId: string;
+  pinId: string;
   room: string;
   label: string;
   isChecked: boolean;

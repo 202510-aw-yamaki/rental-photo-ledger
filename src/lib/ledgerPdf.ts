@@ -2,12 +2,13 @@ import fontkit from "@pdf-lib/fontkit";
 import notoSansJpUrl from "@fontsource/noto-sans-jp/files/noto-sans-jp-japanese-400-normal.woff2?url";
 import { PDFDocument, PDFPage, rgb, type PDFFont } from "pdf-lib";
 import { APP_NAME, PDF_NOTICE } from "../constants";
-import type { FloorPlan, FloorPlanPin, PhotoRecord, Property } from "../types";
+import type { ChecklistItem, FloorPlan, FloorPlanPin, PhotoRecord, Property } from "../types";
 
 export type LedgerPdfInput = {
   property: Property;
   floorPlan: FloorPlan | null;
   pins: FloorPlanPin[];
+  checklistItems: ChecklistItem[];
   photos: PhotoRecord[];
 };
 
@@ -61,7 +62,7 @@ export async function generateLedgerPdf(input: LedgerPdfInput): Promise<Blob> {
 
   addCoverPage(pdfDoc, font, input.property);
   await addFloorPlanPage(pdfDoc, font, input.floorPlan, input.pins);
-  await addPhotoPages(pdfDoc, font, input.pins, input.photos);
+  await addPinRecordPages(pdfDoc, font, input.pins, input.photos, input.checklistItems);
 
   const bytes = await pdfDoc.save();
   const arrayBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -129,61 +130,80 @@ async function addFloorPlanPage(pdfDoc: PDFDocument, font: PDFFont, floorPlan: F
   });
 }
 
-async function addPhotoPages(pdfDoc: PDFDocument, font: PDFFont, pins: FloorPlanPin[], photos: PhotoRecord[]) {
-  const photosByPin = new Map(pins.map((pin) => [pin.id, pin]));
-  const sortedPhotos = [...photos].sort((a, b) => a.takenAt.localeCompare(b.takenAt));
+async function addPinRecordPages(
+  pdfDoc: PDFDocument,
+  font: PDFFont,
+  pins: FloorPlanPin[],
+  photos: PhotoRecord[],
+  checklistItems: ChecklistItem[]
+) {
+  const sortedPins = [...pins].sort((a, b) => Number(a.label) - Number(b.label));
   let page: PDFPage | null = null;
   let slot = 0;
 
-  if (sortedPhotos.length === 0) {
+  if (sortedPins.length === 0) {
     page = pdfDoc.addPage(pageSize);
     drawPageTitle(page, font, "写真台帳");
-    page.drawText("写真はまだ登録されていません。", { x: 48, y: page.getHeight() - 150, size: 12, font, color: muted });
+    page.drawText("番号ピンはまだ登録されていません。", { x: 48, y: page.getHeight() - 150, size: 12, font, color: muted });
     return;
   }
 
-  for (const photo of sortedPhotos) {
-    if (!page || slot >= 2) {
-      page = pdfDoc.addPage(pageSize);
-      drawPageTitle(page, font, "写真台帳");
-      slot = 0;
-    }
+  for (const pin of sortedPins) {
+    const pinPhotos = photos.filter((photo) => photo.pinId === pin.id).sort((a, b) => a.takenAt.localeCompare(b.takenAt));
+    const pinChecks = checklistItems.filter((item) => item.pinId === pin.id);
+    const records = pinPhotos.length > 0 ? pinPhotos : [null];
 
-    const yTop = slot === 0 ? page.getHeight() - 135 : page.getHeight() / 2 - 40;
-    await drawPhotoRecord(pdfDoc, page, font, photo, photosByPin.get(photo.pinId), yTop);
-    slot += 1;
+    for (const photo of records) {
+      if (!page || slot >= 2) {
+        page = pdfDoc.addPage(pageSize);
+        drawPageTitle(page, font, "写真台帳");
+        slot = 0;
+      }
+
+      const yTop = slot === 0 ? page.getHeight() - 135 : page.getHeight() / 2 - 40;
+      await drawPinRecord(pdfDoc, page, font, pin, photo, pinChecks, yTop);
+      slot += 1;
+    }
   }
 }
 
-async function drawPhotoRecord(
+async function drawPinRecord(
   pdfDoc: PDFDocument,
   page: PDFPage,
   font: PDFFont,
-  photo: PhotoRecord,
-  pin: FloorPlanPin | undefined,
+  pin: FloorPlanPin,
+  photo: PhotoRecord | null,
+  checklistItems: ChecklistItem[],
   yTop: number
 ) {
-  const imageBytes = await photo.imageBlob.arrayBuffer();
-  const image = await pdfDoc.embedJpg(imageBytes).catch(() => pdfDoc.embedPng(imageBytes));
   const imageBox = { x: 48, y: yTop - 190, width: 190, height: 150 };
-  const scale = Math.min(imageBox.width / image.width, imageBox.height / image.height);
-  const drawWidth = image.width * scale;
-  const drawHeight = image.height * scale;
 
   page.drawRectangle({ ...imageBox, borderColor: line, borderWidth: 1 });
-  page.drawImage(image, {
-    x: imageBox.x + (imageBox.width - drawWidth) / 2,
-    y: imageBox.y + (imageBox.height - drawHeight) / 2,
-    width: drawWidth,
-    height: drawHeight
-  });
+  if (photo) {
+    const imageBytes = await photo.imageBlob.arrayBuffer();
+    const image = await pdfDoc.embedJpg(imageBytes).catch(() => pdfDoc.embedPng(imageBytes));
+    const scale = Math.min(imageBox.width / image.width, imageBox.height / image.height);
+    const drawWidth = image.width * scale;
+    const drawHeight = image.height * scale;
+    page.drawImage(image, {
+      x: imageBox.x + (imageBox.width - drawWidth) / 2,
+      y: imageBox.y + (imageBox.height - drawHeight) / 2,
+      width: drawWidth,
+      height: drawHeight
+    });
+  } else {
+    page.drawText("写真未登録", { x: imageBox.x + 54, y: imageBox.y + 70, size: 11, font, color: muted });
+  }
 
-  const label = pin ? `ピン ${pin.label}` : "ピン未選択";
-  page.drawText(label, { x: 260, y: yTop - 20, size: 13, font, color: primary });
-  page.drawText(`場所名: ${pin?.placeName || "未入力"}`, { x: 260, y: yTop - 48, size: 10, font, color: ink });
-  page.drawText(`カテゴリー: ${photo.category}`, { x: 260, y: yTop - 72, size: 10, font, color: ink });
-  page.drawText(`登録日時: ${formatDateTime(photo.takenAt)}`, { x: 260, y: yTop - 96, size: 10, font, color: muted });
-  drawWrappedText(page, font, `コメント: ${photo.comment || "未入力"}`, 260, yTop - 126, 32, 10, 17, ink);
+  const checked = checklistItems.filter((item) => item.isChecked).length;
+  const total = checklistItems.length;
+  page.drawText(`ピン ${pin.label}`, { x: 260, y: yTop - 20, size: 13, font, color: primary });
+  page.drawText(`場所名: ${pin.placeName || "未入力"}`, { x: 260, y: yTop - 44, size: 10, font, color: ink });
+  page.drawText(`撮影箇所: ${photo?.targetName || "未入力"}`, { x: 260, y: yTop - 66, size: 10, font, color: ink });
+  page.drawText(`カテゴリー: ${photo?.category || "未入力"}`, { x: 260, y: yTop - 88, size: 10, font, color: ink });
+  page.drawText(`確認: ${checked}/${total}`, { x: 260, y: yTop - 110, size: 10, font, color: muted });
+  page.drawText(`登録日時: ${photo ? formatDateTime(photo.takenAt) : "未入力"}`, { x: 260, y: yTop - 132, size: 10, font, color: muted });
+  drawWrappedText(page, font, `コメント: ${photo?.comment || "未入力"}`, 260, yTop - 160, 32, 10, 17, ink);
 }
 
 function drawPageTitle(page: PDFPage, font: PDFFont, title: string) {

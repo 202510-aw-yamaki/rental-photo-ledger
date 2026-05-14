@@ -1,5 +1,6 @@
 import Dexie, { type Table } from "dexie";
-import { DEFAULT_CHECKLIST_SECTIONS, PHOTO_CATEGORIES } from "./constants";
+import { DEFAULT_PIN_CHECKLIST_ITEMS, PHOTO_CATEGORIES } from "./constants";
+import { getLocalDateInputValue } from "./lib/dates";
 import type {
   ChecklistItem,
   ExportHistory,
@@ -25,34 +26,53 @@ class LedgerDatabase extends Dexie {
 
   constructor() {
     super("rental-photo-ledger");
-    this.version(1).stores({
+    const stores = {
       properties: "id, name, updatedAt",
       floorPlans: "id, propertyId, updatedAt",
       floorPlanPins: "id, propertyId, floorPlanId, label, updatedAt",
       photoRecords: "id, propertyId, pinId, takenAt, updatedAt",
-      checklistItems: "id, propertyId, room, isChecked, updatedAt",
+      checklistItems: "id, propertyId, pinId, room, isChecked, updatedAt",
       exportHistory: "id, propertyId, exportedAt"
+    };
+
+    this.version(1).stores({
+      ...stores,
+      checklistItems: "id, propertyId, room, isChecked, updatedAt"
     });
+    this.version(2)
+      .stores(stores)
+      .upgrade(async (transaction) => {
+        await transaction
+          .table("photoRecords")
+          .toCollection()
+          .modify((photo) => {
+            photo.targetName = photo.targetName ?? "";
+          });
+        await transaction
+          .table("checklistItems")
+          .toCollection()
+          .modify((item) => {
+            item.pinId = item.pinId ?? "";
+            item.note = item.note ?? "";
+          });
+      });
   }
 }
 
 export const db = new LedgerDatabase();
 
-const makeChecklistItems = (propertyId: string): ChecklistItem[] => {
-  const timestamp = nowIso();
-  return DEFAULT_CHECKLIST_SECTIONS.flatMap((section) =>
-    section.items.map((label) => ({
-      id: createId("check"),
-      propertyId,
-      room: section.room,
-      label,
-      isChecked: false,
-      note: "",
-      createdAt: timestamp,
-      updatedAt: timestamp
-    }))
-  );
-};
+const makePinChecklistItems = (pin: FloorPlanPin, timestamp = nowIso()): ChecklistItem[] =>
+  DEFAULT_PIN_CHECKLIST_ITEMS.map((label) => ({
+    id: createId("check"),
+    propertyId: pin.propertyId,
+    pinId: pin.id,
+    room: `ピン ${pin.label}`,
+    label,
+    isChecked: false,
+    note: "",
+    createdAt: timestamp,
+    updatedAt: timestamp
+  }));
 
 export async function createProperty(input: {
   name: string;
@@ -70,16 +90,13 @@ export async function createProperty(input: {
     updatedAt: timestamp
   };
 
-  await db.transaction("rw", db.properties, db.checklistItems, async () => {
-    await db.properties.add(property);
-    await db.checklistItems.bulkAdd(makeChecklistItems(property.id));
-  });
+  await db.properties.add(property);
 
   return property;
 }
 
 export async function createSampleProperty(): Promise<Property> {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getLocalDateInputValue();
   return createProperty({
     name: "サンプル物件",
     moveInDate: today
@@ -110,13 +127,22 @@ export async function touchProperty(propertyId: string): Promise<void> {
 }
 
 export async function loadPropertyBundle(propertyId: string): Promise<PropertyBundle> {
-  const [floorPlans, pins, photos, checklistItems, exportHistory] = await Promise.all([
+  const [floorPlans, pins, photos, initialChecklistItems, exportHistory] = await Promise.all([
     db.floorPlans.where("propertyId").equals(propertyId).reverse().sortBy("updatedAt"),
     db.floorPlanPins.where("propertyId").equals(propertyId).sortBy("label"),
     db.photoRecords.where("propertyId").equals(propertyId).reverse().sortBy("takenAt"),
     db.checklistItems.where("propertyId").equals(propertyId).sortBy("room"),
     db.exportHistory.where("propertyId").equals(propertyId).reverse().sortBy("exportedAt")
   ]);
+  let checklistItems = initialChecklistItems;
+  const pinsWithChecklist = new Set(checklistItems.filter((item) => item.pinId).map((item) => item.pinId));
+  const pinsWithoutChecklist = pins.filter((pin) => !pinsWithChecklist.has(pin.id));
+
+  if (pinsWithoutChecklist.length > 0) {
+    const timestamp = nowIso();
+    await db.checklistItems.bulkAdd(pinsWithoutChecklist.flatMap((pin) => makePinChecklistItems(pin, timestamp)));
+    checklistItems = await db.checklistItems.where("propertyId").equals(propertyId).sortBy("room");
+  }
 
   return {
     floorPlan: floorPlans.at(0) ?? null,
@@ -144,11 +170,13 @@ export async function saveFloorPlan(input: {
     updatedAt: timestamp
   };
 
-  await db.transaction("rw", db.properties, db.floorPlans, db.floorPlanPins, db.photoRecords, async () => {
+  await db.transaction("rw", db.properties, db.floorPlans, db.floorPlanPins, async () => {
     await db.floorPlans.where("propertyId").equals(input.propertyId).delete();
-    await db.floorPlanPins.where("propertyId").equals(input.propertyId).delete();
-    await db.photoRecords.where("propertyId").equals(input.propertyId).delete();
     await db.floorPlans.add(floorPlan);
+    await db.floorPlanPins.where("propertyId").equals(input.propertyId).modify({
+      floorPlanId: floorPlan.id,
+      updatedAt: timestamp
+    });
     await touchProperty(input.propertyId);
   });
 
@@ -175,8 +203,9 @@ export async function addPin(input: {
     updatedAt: timestamp
   };
 
-  await db.transaction("rw", db.properties, db.floorPlanPins, async () => {
+  await db.transaction("rw", db.properties, db.floorPlanPins, db.checklistItems, async () => {
     await db.floorPlanPins.add(pin);
+    await db.checklistItems.bulkAdd(makePinChecklistItems(pin, timestamp));
     await touchProperty(input.propertyId);
   });
 
@@ -202,9 +231,10 @@ export async function deletePin(pinId: string): Promise<void> {
   const existing = await db.floorPlanPins.get(pinId);
   if (!existing) return;
 
-  await db.transaction("rw", db.properties, db.floorPlanPins, db.photoRecords, async () => {
+  await db.transaction("rw", db.properties, db.floorPlanPins, db.photoRecords, db.checklistItems, async () => {
     await db.floorPlanPins.delete(pinId);
     await db.photoRecords.where("pinId").equals(pinId).delete();
+    await db.checklistItems.where("pinId").equals(pinId).delete();
     await touchProperty(existing.propertyId);
   });
 }
@@ -212,6 +242,7 @@ export async function deletePin(pinId: string): Promise<void> {
 export async function addPhotoRecord(input: {
   propertyId: string;
   pinId: string;
+  targetName: string;
   category: PhotoCategory;
   comment: string;
   imageBlob: Blob;
@@ -222,6 +253,7 @@ export async function addPhotoRecord(input: {
     id: createId("photo"),
     propertyId: input.propertyId,
     pinId: input.pinId,
+    targetName: input.targetName.trim(),
     category: PHOTO_CATEGORIES.includes(input.category) ? input.category : "その他",
     comment: input.comment.trim(),
     imageBlob: input.imageBlob,

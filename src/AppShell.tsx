@@ -12,8 +12,15 @@ import {
   Trash2,
   Upload
 } from "lucide-react";
-import { type ChangeEvent, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { APP_NAME, APP_NOTICE, DEFAULT_CHECKLIST_SECTIONS, PHOTO_CATEGORIES, SHARE_MAIL_BODY, SHARE_MAIL_SUBJECT } from "./constants";
+import { type ChangeEvent, type FormEvent, useCallback, useEffect, useRef, useState } from "react";
+import {
+  APP_NAME,
+  APP_NOTICE,
+  DEFAULT_PIN_CHECKLIST_ITEMS,
+  PHOTO_CATEGORIES,
+  SHARE_MAIL_BODY,
+  SHARE_MAIL_SUBJECT
+} from "./constants";
 import {
   addExportHistory,
   addPhotoRecord,
@@ -29,13 +36,14 @@ import {
   updatePin
 } from "./db";
 import { compressImage } from "./lib/images";
+import { getLocalDateInputValue } from "./lib/dates";
 import { buildLedgerFileName, formatDateTime, generateLedgerPdf } from "./lib/ledgerPdf";
 import { getPdfPageCount, renderFirstPdfPage } from "./lib/pdfPreview";
 import { createSamplePropertyWithLayout } from "./lib/sampleData";
 import { SAMPLE_LAYOUTS, type SampleLayoutType } from "./lib/sampleLayouts";
 import type { ChecklistItem, FloorPlan, FloorPlanPin, PhotoCategory, PhotoRecord, Property, PropertyBundle } from "./types";
 
-type SectionId = "overview" | "floor" | "photos" | "checklist" | "export";
+type SectionId = "overview" | "floor" | "export";
 
 type PlanMode = "idle" | "add" | "move";
 
@@ -49,9 +57,7 @@ const emptyBundle: PropertyBundle = {
 
 const navItems: Array<{ id: SectionId; label: string; icon: typeof Home }> = [
   { id: "overview", label: "概要", icon: Home },
-  { id: "floor", label: "間取り", icon: MapPin },
-  { id: "photos", label: "写真", icon: Camera },
-  { id: "checklist", label: "確認", icon: CheckSquare },
+  { id: "floor", label: "記録", icon: MapPin },
   { id: "export", label: "PDF", icon: FileText }
 ];
 
@@ -65,7 +71,6 @@ export function AppShell() {
   const [busy, setBusy] = useState(false);
 
   const selectedProperty = properties.find((property) => property.id === selectedPropertyId) ?? null;
-  const selectedPin = bundle.pins.find((pin) => pin.id === selectedPinId) ?? bundle.pins.at(0) ?? null;
 
   const refreshProperties = useCallback(async () => {
     const nextProperties = await listProperties();
@@ -149,6 +154,10 @@ export function AppShell() {
 
   const handleFloorPlanUpload = async (file: File) => {
     if (!selectedProperty) return;
+    if (bundle.floorPlan && (bundle.pins.length > 0 || bundle.photos.length > 0)) {
+      const ok = window.confirm("間取りPDFを差し替えます。既存のピンと写真は保持されますが、位置がずれる場合はピンを移動してください。");
+      if (!ok) return;
+    }
     await runAction(async () => {
       if (file.type !== "application/pdf") {
         throw new Error("PDFファイルを選択してください。");
@@ -160,7 +169,6 @@ export function AppShell() {
         fileBlob: file,
         pageCount
       });
-      setSelectedPinId("");
       await reloadAll();
     }, "間取りPDFを保存しました。");
   };
@@ -188,13 +196,20 @@ export function AppShell() {
     }, "番号ピンを移動しました。");
   };
 
-  const handlePhotoAdd = async (input: { pinId: string; file: File; category: PhotoCategory; comment: string }) => {
+  const handlePhotoAdd = async (input: {
+    pinId: string;
+    file: File;
+    targetName: string;
+    category: PhotoCategory;
+    comment: string;
+  }) => {
     if (!selectedProperty) return;
     await runAction(async () => {
       const imageBlob = await compressImage(input.file);
       await addPhotoRecord({
         propertyId: selectedProperty.id,
         pinId: input.pinId,
+        targetName: input.targetName,
         category: input.category,
         comment: input.comment,
         imageBlob,
@@ -226,7 +241,7 @@ export function AppShell() {
 
       <div className="mx-auto grid w-full max-w-6xl gap-5 px-4 py-5 lg:grid-cols-[300px_1fr]">
         <aside className="space-y-4">
-          <PropertyCreator onCreate={handleCreateProperty} onSample={handleSample} disabled={busy} />
+          <PropertyCreator onCreate={handleCreateProperty} disabled={busy} />
           <PropertyList
             properties={properties}
             selectedPropertyId={selectedPropertyId}
@@ -252,41 +267,19 @@ export function AppShell() {
                 disabled={busy}
               />
               <SectionNav section={section} onChange={setSection} />
-              {section === "overview" ? <Overview property={selectedProperty} bundle={bundle} /> : null}
+              {section === "overview" ? <Overview property={selectedProperty} bundle={bundle} onChangeSection={setSection} /> : null}
               {section === "floor" ? (
                 <FloorPlanSection
                   floorPlan={bundle.floorPlan}
                   pins={bundle.pins}
+                  photos={bundle.photos}
+                  checklistItems={bundle.checklistItems}
                   selectedPinId={selectedPinId}
                   busy={busy}
                   onUpload={handleFloorPlanUpload}
                   onSelectPin={setSelectedPinId}
                   onAddPin={handleAddPin}
                   onMovePin={handleMovePin}
-                  onUpdatePin={async (pinId, placeName) => {
-                    await runAction(async () => {
-                      await updatePin(pinId, { placeName });
-                      await reloadAll();
-                    }, "場所名を保存しました。");
-                  }}
-                  onDeletePin={async (pinId) => {
-                    const ok = window.confirm("この番号ピンと紐づく写真を削除します。");
-                    if (!ok) return;
-                    await runAction(async () => {
-                      await deletePin(pinId);
-                      await reloadAll();
-                    }, "番号ピンを削除しました。");
-                  }}
-                />
-              ) : null}
-              {section === "photos" ? (
-                <PhotosSection
-                  pins={bundle.pins}
-                  photos={bundle.photos}
-                  selectedPin={selectedPin}
-                  selectedPinId={selectedPinId}
-                  busy={busy}
-                  onSelectPin={setSelectedPinId}
                   onAddPhoto={handlePhotoAdd}
                   onDeletePhoto={async (photoId) => {
                     await runAction(async () => {
@@ -294,16 +287,25 @@ export function AppShell() {
                       await reloadAll();
                     }, "写真を削除しました。");
                   }}
-                />
-              ) : null}
-              {section === "checklist" ? (
-                <ChecklistSection
-                  items={bundle.checklistItems}
-                  onUpdate={async (itemId, patch) => {
+                  onUpdateChecklist={async (itemId, patch) => {
                     await runAction(async () => {
                       await updateChecklistItem(itemId, patch);
                       await reloadAll();
                     });
+                  }}
+                  onUpdatePin={async (pinId, placeName) => {
+                    await runAction(async () => {
+                      await updatePin(pinId, { placeName });
+                      await reloadAll();
+                    }, "場所名を保存しました。");
+                  }}
+                  onDeletePin={async (pinId) => {
+                    const ok = window.confirm("この番号ピンと紐づく写真、確認項目を削除します。");
+                    if (!ok) return;
+                    await runAction(async () => {
+                      await deletePin(pinId);
+                      await reloadAll();
+                    }, "番号ピンを削除しました。");
                   }}
                 />
               ) : null}
@@ -329,15 +331,13 @@ export function AppShell() {
 
 function PropertyCreator({
   onCreate,
-  onSample,
   disabled
 }: {
   onCreate: (input: { name: string; moveInDate: string; moveOutDate: string }) => Promise<void>;
-  onSample: (layoutType: SampleLayoutType) => Promise<void>;
   disabled: boolean;
 }) {
   const [name, setName] = useState("");
-  const [moveInDate, setMoveInDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [moveInDate, setMoveInDate] = useState(() => getLocalDateInputValue());
   const [moveOutDate, setMoveOutDate] = useState("");
 
   const handleSubmit = async (event: FormEvent) => {
@@ -389,7 +389,6 @@ function PropertyCreator({
           作成する
         </button>
       </form>
-      <SampleLayoutButtons onSample={onSample} disabled={disabled} compact />
     </section>
   );
 }
@@ -489,7 +488,7 @@ function PropertyHeader({
       <div className="mt-4 grid grid-cols-3 gap-2 text-center">
         <Metric label="ピン" value={bundle.pins.length} />
         <Metric label="写真" value={bundle.photos.length} />
-        <Metric label="確認済み" value={bundle.checklistItems.filter((item) => item.isChecked).length} />
+        <Metric label="確認済み" value={bundle.checklistItems.filter((item) => item.pinId && item.isChecked).length} />
       </div>
     </section>
   );
@@ -497,7 +496,7 @@ function PropertyHeader({
 
 function SectionNav({ section, onChange }: { section: SectionId; onChange: (section: SectionId) => void }) {
   return (
-    <nav className="grid grid-cols-5 gap-1 rounded-lg border border-ledger-line bg-white p-1">
+    <nav className="grid grid-cols-3 gap-1 rounded-lg border border-ledger-line bg-white p-1">
       {navItems.map((item) => {
         const Icon = item.icon;
         return (
@@ -518,10 +517,19 @@ function SectionNav({ section, onChange }: { section: SectionId; onChange: (sect
   );
 }
 
-function Overview({ property, bundle }: { property: Property; bundle: PropertyBundle }) {
+function Overview({
+  property,
+  bundle,
+  onChangeSection
+}: {
+  property: Property;
+  bundle: PropertyBundle;
+  onChangeSection: (section: SectionId) => void;
+}) {
   const photoPins = new Set(bundle.photos.map((photo) => photo.pinId)).size;
-  const checked = bundle.checklistItems.filter((item) => item.isChecked).length;
-  const total = bundle.checklistItems.length;
+  const pinChecklistItems = bundle.checklistItems.filter((item) => item.pinId);
+  const checked = pinChecklistItems.filter((item) => item.isChecked).length;
+  const total = pinChecklistItems.length;
 
   return (
     <section className="rounded-lg border border-ledger-line bg-white p-4">
@@ -532,9 +540,24 @@ function Overview({ property, bundle }: { property: Property; bundle: PropertyBu
         <InfoPanel title="チェックリスト" value={`${checked} / ${total}`} />
         <InfoPanel title="最終更新" value={formatDateTime(property.updatedAt)} />
       </div>
-      <p className="mt-4 text-sm leading-7 text-ledger-muted">
-        まず間取りPDFを登録し、間取り図をタップして番号ピンを置きます。番号ピンを選ぶと、場所名と写真を登録できます。
-      </p>
+      <div className="mt-5 grid gap-2 sm:grid-cols-2">
+        <button
+          type="button"
+          className="inline-flex min-h-12 items-center justify-center gap-2 rounded-md bg-ledger-primary px-4 font-bold text-white"
+          onClick={() => onChangeSection("floor")}
+        >
+          <MapPin aria-hidden size={18} />
+          間取りと写真を記録
+        </button>
+        <button
+          type="button"
+          className="inline-flex min-h-12 items-center justify-center gap-2 rounded-md border border-ledger-line px-4 font-bold text-ledger-primary"
+          onClick={() => onChangeSection("export")}
+        >
+          <FileText aria-hidden size={18} />
+          PDF保存へ進む
+        </button>
+      </div>
     </section>
   );
 }
@@ -542,28 +565,46 @@ function Overview({ property, bundle }: { property: Property; bundle: PropertyBu
 function FloorPlanSection({
   floorPlan,
   pins,
+  photos,
+  checklistItems,
   selectedPinId,
   busy,
   onUpload,
   onSelectPin,
   onAddPin,
   onMovePin,
+  onAddPhoto,
+  onDeletePhoto,
+  onUpdateChecklist,
   onUpdatePin,
   onDeletePin
 }: {
   floorPlan: FloorPlan | null;
   pins: FloorPlanPin[];
+  photos: PhotoRecord[];
+  checklistItems: ChecklistItem[];
   selectedPinId: string;
   busy: boolean;
   onUpload: (file: File) => Promise<void>;
   onSelectPin: (pinId: string) => void;
   onAddPin: (point: { x: number; y: number }) => Promise<void>;
   onMovePin: (pinId: string, point: { x: number; y: number }) => Promise<void>;
+  onAddPhoto: (input: {
+    pinId: string;
+    file: File;
+    targetName: string;
+    category: PhotoCategory;
+    comment: string;
+  }) => Promise<void>;
+  onDeletePhoto: (photoId: string) => Promise<void>;
+  onUpdateChecklist: (itemId: string, patch: Partial<Pick<ChecklistItem, "isChecked" | "note">>) => Promise<void>;
   onUpdatePin: (pinId: string, placeName: string) => Promise<void>;
   onDeletePin: (pinId: string) => Promise<void>;
 }) {
   const [mode, setMode] = useState<PlanMode>("idle");
   const selectedPin = pins.find((pin) => pin.id === selectedPinId) ?? null;
+  const selectedPinPhotos = photos.filter((photo) => photo.pinId === selectedPinId);
+  const selectedPinChecklist = checklistItems.filter((item) => item.pinId === selectedPinId);
 
   const handleMapPoint = async (point: { x: number; y: number }) => {
     if (mode === "add") {
@@ -581,8 +622,8 @@ function FloorPlanSection({
     <section className="rounded-lg border border-ledger-line bg-white p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-xl font-bold">間取りPDFと番号ピン</h2>
-          <p className="mt-1 text-sm text-ledger-muted">PDFの1ページ目に番号ピンを配置します。</p>
+          <h2 className="text-xl font-bold">間取りと場所別の記録</h2>
+          <p className="mt-1 text-sm text-ledger-muted">PDFの1ページ目にピンを置き、選んだピンに写真と確認をまとめます。</p>
         </div>
         <label className="inline-flex min-h-12 cursor-pointer items-center justify-center gap-2 rounded-md border border-ledger-line bg-white px-4 font-bold text-ledger-primary">
           <Upload aria-hidden size={20} />
@@ -640,6 +681,34 @@ function FloorPlanSection({
             onSelectPin={onSelectPin}
             onMapPoint={handleMapPoint}
           />
+          {pins.length > 0 ? (
+            <>
+              <PinTabs
+                pins={pins}
+                photos={photos}
+                checklistItems={checklistItems}
+                selectedPinId={selectedPinId}
+                onSelectPin={onSelectPin}
+              />
+              {selectedPin ? (
+                <PinDetailPanel
+                  pin={selectedPin}
+                  photos={selectedPinPhotos}
+                  checklistItems={selectedPinChecklist}
+                  busy={busy}
+                  moving={mode === "move"}
+                  onStartMove={() => setMode(mode === "move" ? "idle" : "move")}
+                  onSavePlaceName={(placeName) => onUpdatePin(selectedPin.id, placeName)}
+                  onDeletePin={() => onDeletePin(selectedPin.id)}
+                  onAddPhoto={onAddPhoto}
+                  onDeletePhoto={onDeletePhoto}
+                  onUpdateChecklist={onUpdateChecklist}
+                />
+              ) : null}
+            </>
+          ) : (
+            <p className="mt-4 rounded-md bg-ledger-paper p-4 text-sm text-ledger-muted">ピン追加を押して、間取り図の記録したい場所をタップしてください。</p>
+          )}
         </>
       ) : (
         <div className="mt-5 rounded-md border border-dashed border-ledger-line bg-ledger-paper p-6 text-center text-sm text-ledger-muted">
@@ -647,18 +716,6 @@ function FloorPlanSection({
         </div>
       )}
 
-      <div className="mt-5 space-y-3">
-        {pins.map((pin) => (
-          <PinEditor
-            key={pin.id}
-            pin={pin}
-            selected={pin.id === selectedPinId}
-            onSelect={() => onSelectPin(pin.id)}
-            onSave={(placeName) => onUpdatePin(pin.id, placeName)}
-            onDelete={() => onDeletePin(pin.id)}
-          />
-        ))}
-      </div>
     </section>
   );
 }
@@ -737,198 +794,273 @@ function FloorPlanCanvas({
   );
 }
 
-function PinEditor({
-  pin,
-  selected,
-  onSelect,
-  onSave,
-  onDelete
+function PinTabs({
+  pins,
+  photos,
+  checklistItems,
+  selectedPinId,
+  onSelectPin
 }: {
-  pin: FloorPlanPin;
-  selected: boolean;
-  onSelect: () => void;
-  onSave: (placeName: string) => Promise<void>;
-  onDelete: () => Promise<void>;
+  pins: FloorPlanPin[];
+  photos: PhotoRecord[];
+  checklistItems: ChecklistItem[];
+  selectedPinId: string;
+  onSelectPin: (pinId: string) => void;
 }) {
-  const [placeName, setPlaceName] = useState(pin.placeName);
-
-  useEffect(() => setPlaceName(pin.placeName), [pin.placeName]);
-
   return (
-    <div className={`rounded-md border p-3 ${selected ? "border-ledger-primary bg-teal-50" : "border-ledger-line bg-white"}`}>
-      <div className="flex items-center justify-between gap-3">
-        <button type="button" className="font-bold text-ledger-primary" onClick={onSelect}>
-          ピン {pin.label}
-        </button>
-        <button
-          type="button"
-          className="inline-flex min-h-10 items-center gap-2 rounded-md border border-red-200 px-3 text-sm font-bold text-red-700"
-          onClick={() => void onDelete()}
-        >
-          <Trash2 aria-hidden size={16} />
-          削除
-        </button>
-      </div>
-      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-        <input
-          className="min-h-11 flex-1 rounded-md border border-ledger-line px-3"
-          value={placeName}
-          onChange={(event) => setPlaceName(event.target.value)}
-          placeholder="例: リビングの窓"
-        />
-        <button
-          type="button"
-          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ledger-primary px-4 font-bold text-white"
-          onClick={() => void onSave(placeName)}
-        >
-          <Save aria-hidden size={18} />
-          保存
-        </button>
+    <div className="mt-5 overflow-x-auto pb-2">
+      <div className="flex min-w-max gap-2">
+        {pins.map((pin) => {
+          const photoCount = photos.filter((photo) => photo.pinId === pin.id).length;
+          const checks = checklistItems.filter((item) => item.pinId === pin.id);
+          const checkedCount = checks.filter((item) => item.isChecked).length;
+          const selected = selectedPinId === pin.id;
+
+          return (
+            <button
+              type="button"
+              key={pin.id}
+              className={`min-h-20 w-44 rounded-md border p-3 text-left ${
+                selected ? "border-ledger-primary bg-teal-50" : "border-ledger-line bg-white hover:bg-slate-50"
+              }`}
+              onClick={() => onSelectPin(pin.id)}
+            >
+              <span className="flex items-start justify-between gap-2">
+                <span className="font-bold text-ledger-primary">ピン {pin.label}</span>
+                <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${photoCount > 0 ? "bg-teal-100 text-ledger-primary" : "bg-amber-100 text-amber-800"}`}>
+                  写真 {photoCount}
+                </span>
+              </span>
+              <span className="mt-1 block truncate text-sm">{pin.placeName || "場所名未入力"}</span>
+              <span className="mt-2 flex gap-1 text-[11px] font-bold">
+                <span className="rounded-full bg-ledger-paper px-2 py-0.5 text-ledger-muted">確認 {checkedCount}/{checks.length}</span>
+                {!pin.placeName.trim() ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800">名称未入力</span> : null}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-function PhotosSection({
-  pins,
+function PinDetailPanel({
+  pin,
   photos,
-  selectedPin,
-  selectedPinId,
+  checklistItems,
   busy,
-  onSelectPin,
+  moving,
+  onStartMove,
+  onSavePlaceName,
+  onDeletePin,
   onAddPhoto,
-  onDeletePhoto
+  onDeletePhoto,
+  onUpdateChecklist
 }: {
-  pins: FloorPlanPin[];
+  pin: FloorPlanPin;
   photos: PhotoRecord[];
-  selectedPin: FloorPlanPin | null;
-  selectedPinId: string;
+  checklistItems: ChecklistItem[];
   busy: boolean;
-  onSelectPin: (pinId: string) => void;
-  onAddPhoto: (input: { pinId: string; file: File; category: PhotoCategory; comment: string }) => Promise<void>;
+  moving: boolean;
+  onStartMove: () => void;
+  onSavePlaceName: (placeName: string) => Promise<void>;
+  onDeletePin: () => Promise<void>;
+  onAddPhoto: (input: {
+    pinId: string;
+    file: File;
+    targetName: string;
+    category: PhotoCategory;
+    comment: string;
+  }) => Promise<void>;
   onDeletePhoto: (photoId: string) => Promise<void>;
+  onUpdateChecklist: (itemId: string, patch: Partial<Pick<ChecklistItem, "isChecked" | "note">>) => Promise<void>;
 }) {
+  const [placeName, setPlaceName] = useState(pin.placeName);
+  const [targetName, setTargetName] = useState("");
   const [category, setCategory] = useState<PhotoCategory>("壁");
   const [comment, setComment] = useState("");
   const [file, setFile] = useState<File | null>(null);
+  const checklistOrder = (label: string) => {
+    const index = DEFAULT_PIN_CHECKLIST_ITEMS.indexOf(label as (typeof DEFAULT_PIN_CHECKLIST_ITEMS)[number]);
+    return index === -1 ? DEFAULT_PIN_CHECKLIST_ITEMS.length : index;
+  };
+  const orderedChecklistItems = [...checklistItems].sort((a, b) => checklistOrder(a.label) - checklistOrder(b.label));
+
+  useEffect(() => setPlaceName(pin.placeName), [pin.placeName]);
+  useEffect(() => {
+    setTargetName("");
+    setComment("");
+    setFile(null);
+  }, [pin.id]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!selectedPin || !file) return;
-    await onAddPhoto({ pinId: selectedPin.id, file, category, comment });
-    setFile(null);
+    if (!file) return;
+    await onAddPhoto({ pinId: pin.id, file, targetName, category, comment });
+    setTargetName("");
     setComment("");
+    setFile(null);
   };
 
   return (
-    <section className="rounded-lg border border-ledger-line bg-white p-4">
-      <h2 className="text-xl font-bold">写真登録</h2>
-      {pins.length === 0 ? (
-        <p className="mt-3 rounded-md bg-ledger-paper p-4 text-sm text-ledger-muted">先に間取り図で番号ピンを追加してください。</p>
-      ) : (
-        <>
-          <label className="mt-4 block text-sm font-bold">
-            登録先のピン
-            <select
-              className="mt-1 min-h-12 w-full rounded-md border border-ledger-line px-3 text-base"
-              value={selectedPinId}
-              onChange={(event) => onSelectPin(event.target.value)}
-            >
-              {pins.map((pin) => (
-                <option key={pin.id} value={pin.id}>
-                  ピン {pin.label} {pin.placeName ? `・${pin.placeName}` : ""}
-                </option>
-              ))}
-            </select>
-          </label>
-          <form className="mt-4 space-y-3 rounded-md bg-ledger-paper p-4" onSubmit={handleSubmit}>
-            <label className="block text-sm font-bold">
-              写真
+    <div className="mt-4 rounded-md border border-ledger-line bg-white p-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="text-lg font-bold">ピン {pin.label} の記録</h3>
+          <p className="mt-1 text-sm text-ledger-muted">
+            写真 {photos.length}枚 / 確認 {checklistItems.filter((item) => item.isChecked).length}/{checklistItems.length}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className={`inline-flex min-h-10 items-center gap-2 rounded-md px-3 text-sm font-bold ${
+              moving ? "bg-ledger-primary text-white" : "border border-ledger-line text-ledger-primary"
+            }`}
+            onClick={onStartMove}
+          >
+            <Move aria-hidden size={16} />
+            移動
+          </button>
+          <button
+            type="button"
+            className="inline-flex min-h-10 items-center gap-2 rounded-md border border-red-200 px-3 text-sm font-bold text-red-700"
+            onClick={() => void onDeletePin()}
+          >
+            <Trash2 aria-hidden size={16} />
+            削除
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+        <label className="flex-1 text-sm font-bold">
+          場所名
+          <input
+            className="mt-1 min-h-11 w-full rounded-md border border-ledger-line px-3 text-base"
+            value={placeName}
+            onChange={(event) => setPlaceName(event.target.value)}
+            placeholder="例: リビングの窓"
+          />
+        </label>
+        <button
+          type="button"
+          className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-ledger-primary px-4 font-bold text-white sm:self-end"
+          onClick={() => void onSavePlaceName(placeName)}
+        >
+          <Save aria-hidden size={18} />
+          保存
+        </button>
+      </div>
+
+      <form className="mt-5 grid gap-3 rounded-md bg-ledger-paper p-4 sm:grid-cols-2" onSubmit={handleSubmit}>
+        <label className="block text-sm font-bold sm:col-span-2">
+          写真
+          <input
+            type="file"
+            accept="image/*"
+            capture="environment"
+            className="mt-1 block min-h-12 w-full rounded-md border border-ledger-line bg-white px-3 py-2"
+            onChange={(event: ChangeEvent<HTMLInputElement>) => setFile(event.target.files?.[0] ?? null)}
+          />
+        </label>
+        <label className="block text-sm font-bold">
+          撮影箇所
+          <input
+            className="mt-1 min-h-12 w-full rounded-md border border-ledger-line bg-white px-3 text-base"
+            value={targetName}
+            onChange={(event) => setTargetName(event.target.value)}
+            placeholder="例: 窓枠右下"
+          />
+        </label>
+        <label className="block text-sm font-bold">
+          カテゴリー
+          <select
+            className="mt-1 min-h-12 w-full rounded-md border border-ledger-line bg-white px-3 text-base"
+            value={category}
+            onChange={(event) => setCategory(event.target.value as PhotoCategory)}
+          >
+            {PHOTO_CATEGORIES.map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block text-sm font-bold sm:col-span-2">
+          コメント
+          <textarea
+            className="mt-1 min-h-24 w-full rounded-md border border-ledger-line bg-white px-3 py-2 text-base"
+            value={comment}
+            onChange={(event) => setComment(event.target.value)}
+            placeholder="状態を短く記録します"
+          />
+        </label>
+        <button
+          type="submit"
+          className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-md bg-ledger-primary px-4 font-bold text-white disabled:opacity-50 sm:col-span-2"
+          disabled={busy || !file}
+        >
+          <Camera aria-hidden size={20} />
+          このピンに写真を追加
+        </button>
+      </form>
+
+      <div className="mt-5 rounded-md border border-ledger-line p-3">
+        <h4 className="flex items-center gap-2 font-bold">
+          <CheckSquare aria-hidden size={18} />
+          この場所の確認
+        </h4>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {orderedChecklistItems.length === 0 ? <p className="text-sm text-ledger-muted">確認項目を準備中です。</p> : null}
+          {orderedChecklistItems.map((item) => (
+            <label key={item.id} className="flex min-h-11 items-center justify-between gap-3 rounded-md bg-ledger-paper px-3">
+              <span>{item.label}</span>
               <input
-                type="file"
-                accept="image/*"
-                capture="environment"
-                className="mt-1 block min-h-12 w-full rounded-md border border-ledger-line bg-white px-3 py-2"
-                onChange={(event: ChangeEvent<HTMLInputElement>) => setFile(event.target.files?.[0] ?? null)}
+                type="checkbox"
+                className="h-5 w-5"
+                checked={item.isChecked}
+                onChange={(event) => void onUpdateChecklist(item.id, { isChecked: event.target.checked })}
               />
             </label>
-            <label className="block text-sm font-bold">
-              カテゴリー
-              <select
-                className="mt-1 min-h-12 w-full rounded-md border border-ledger-line bg-white px-3 text-base"
-                value={category}
-                onChange={(event) => setCategory(event.target.value as PhotoCategory)}
-              >
-                {PHOTO_CATEGORIES.map((item) => (
-                  <option key={item} value={item}>
-                    {item}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block text-sm font-bold">
-              コメント
-              <textarea
-                className="mt-1 min-h-24 w-full rounded-md border border-ledger-line bg-white px-3 py-2 text-base"
-                value={comment}
-                onChange={(event) => setComment(event.target.value)}
-                placeholder="状態を短く記録します"
-              />
-            </label>
-            <button
-              type="submit"
-              className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-md bg-ledger-primary px-4 font-bold text-white disabled:opacity-50"
-              disabled={busy || !selectedPin || !file}
-            >
-              <Camera aria-hidden size={20} />
-              写真を追加する
-            </button>
-          </form>
-        </>
-      )}
-      <PhotoList photos={photos} pins={pins} onDelete={onDeletePhoto} />
-    </section>
+          ))}
+        </div>
+      </div>
+
+      <PinPhotoList photos={photos} onDelete={onDeletePhoto} />
+    </div>
   );
 }
 
-function PhotoList({
+function PinPhotoList({
   photos,
-  pins,
   onDelete
 }: {
   photos: PhotoRecord[];
-  pins: FloorPlanPin[];
   onDelete: (photoId: string) => Promise<void>;
 }) {
-  const pinById = useMemo(() => new Map(pins.map((pin) => [pin.id, pin])), [pins]);
-
   return (
     <div className="mt-5 grid gap-3 sm:grid-cols-2">
       {photos.length === 0 ? <p className="text-sm text-ledger-muted">まだ写真がありません。</p> : null}
-      {photos.map((photo) => {
-        const pin = pinById.get(photo.pinId);
-        return (
-          <article key={photo.id} className="rounded-md border border-ledger-line bg-white p-3">
-            <BlobImage blob={photo.imageBlob} alt={photo.imageFileName} />
-            <div className="mt-3 space-y-1 text-sm">
-              <p className="font-bold">
-                ピン {pin?.label ?? "-"} {pin?.placeName ? `・${pin.placeName}` : ""}
-              </p>
-              <p className="text-ledger-muted">{photo.category}</p>
-              <p>{photo.comment || "コメント未入力"}</p>
-              <p className="text-xs text-ledger-muted">{formatDateTime(photo.takenAt)}</p>
-            </div>
-            <button
-              type="button"
-              className="mt-3 inline-flex min-h-10 items-center gap-2 rounded-md border border-red-200 px-3 text-sm font-bold text-red-700"
-              onClick={() => void onDelete(photo.id)}
-            >
-              <Trash2 aria-hidden size={16} />
-              削除
-            </button>
-          </article>
-        );
-      })}
+      {photos.map((photo) => (
+        <article key={photo.id} className="rounded-md border border-ledger-line bg-white p-3">
+          <BlobImage blob={photo.imageBlob} alt={photo.imageFileName} />
+          <div className="mt-3 space-y-1 text-sm">
+            <p className="font-bold">{photo.targetName || "撮影箇所未入力"}</p>
+            <p className="text-ledger-muted">{photo.category}</p>
+            <p>{photo.comment || "コメント未入力"}</p>
+            <p className="text-xs text-ledger-muted">{formatDateTime(photo.takenAt)}</p>
+          </div>
+          <button
+            type="button"
+            className="mt-3 inline-flex min-h-10 items-center gap-2 rounded-md border border-red-200 px-3 text-sm font-bold text-red-700"
+            onClick={() => void onDelete(photo.id)}
+          >
+            <Trash2 aria-hidden size={16} />
+            削除
+          </button>
+        </article>
+      ))}
     </div>
   );
 }
@@ -943,67 +1075,6 @@ function BlobImage({ blob, alt }: { blob: Blob; alt: string }) {
   }, [blob]);
 
   return url ? <img src={url} alt={alt} className="h-44 w-full rounded-md object-cover" /> : null;
-}
-
-function ChecklistSection({
-  items,
-  onUpdate
-}: {
-  items: ChecklistItem[];
-  onUpdate: (itemId: string, patch: Partial<Pick<ChecklistItem, "isChecked" | "note">>) => Promise<void>;
-}) {
-  const grouped = useMemo(() => {
-    return items.reduce<Record<string, ChecklistItem[]>>((acc, item) => {
-      acc[item.room] = [...(acc[item.room] ?? []), item];
-      return acc;
-    }, {});
-  }, [items]);
-  const roomOrder = useMemo(
-    () => new Map<string, number>(DEFAULT_CHECKLIST_SECTIONS.map((section, index) => [section.room, index])),
-    []
-  );
-  const groupedEntries = useMemo(
-    () =>
-      Object.entries(grouped).sort(
-        ([roomA], [roomB]) => (roomOrder.get(roomA) ?? 999) - (roomOrder.get(roomB) ?? 999)
-      ),
-    [grouped, roomOrder]
-  );
-
-  return (
-    <section className="rounded-lg border border-ledger-line bg-white p-4">
-      <h2 className="text-xl font-bold">入居時チェックリスト</h2>
-      <p className="mt-1 text-sm text-ledger-muted">撮影や確認の漏れを減らすための一覧です。物件に無い項目は空欄のままで構いません。</p>
-      <div className="mt-5 space-y-4">
-        {groupedEntries.map(([room, roomItems]) => (
-          <section key={room} className="rounded-md border border-ledger-line p-3">
-            <h3 className="font-bold">{room}</h3>
-            <div className="mt-3 space-y-3">
-              {roomItems.map((item) => (
-                <div key={item.id} className="grid gap-2 sm:grid-cols-[1fr_220px]">
-                  <label className="flex min-h-11 items-center gap-3">
-                    <input
-                      type="checkbox"
-                      className="h-5 w-5"
-                      checked={item.isChecked}
-                      onChange={(event) => void onUpdate(item.id, { isChecked: event.target.checked })}
-                    />
-                    <span>{item.label}</span>
-                  </label>
-                  <input
-                    className="min-h-11 rounded-md border border-ledger-line px-3"
-                    value={item.note}
-                    onChange={(event) => void onUpdate(item.id, { note: event.target.value })}
-                    placeholder="メモ"
-                  />
-                </div>
-              ))}
-            </div>
-          </section>
-        ))}
-      </div>
-    </section>
-  );
 }
 
 function ExportSection({
@@ -1028,6 +1099,7 @@ function ExportSection({
         property,
         floorPlan: bundle.floorPlan,
         pins: bundle.pins,
+        checklistItems: bundle.checklistItems,
         photos: bundle.photos
       });
       const nextFileName = buildLedgerFileName(property.name);

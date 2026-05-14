@@ -1,10 +1,11 @@
 import { addPin, createProperty, saveFloorPlan, updatePin } from "../db";
 import type { Property } from "../types";
+import { getLocalDateInputValue } from "./dates";
 import { generateSampleLayoutPdf, getSampleLayout, type SampleLayoutType } from "./sampleLayouts";
 
 export async function createSamplePropertyWithLayout(type: SampleLayoutType): Promise<Property> {
   const layout = getSampleLayout(type);
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getLocalDateInputValue();
   const property = await createProperty({
     name: layout.propertyName,
     moveInDate: today

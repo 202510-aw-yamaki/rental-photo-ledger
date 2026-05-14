@@ -135,6 +135,8 @@ export const DEFAULT_CHECKLIST_SECTIONS = [
   }
 ] as const;
 
+export const DEFAULT_PIN_CHECKLIST_ITEMS = ["場所名確認", "全体写真", "気になる箇所の写真", "コメント確認"] as const;
+
 export const SHARE_MAIL_SUBJECT = "入居時の室内状態記録について";
 
 export const SHARE_MAIL_BODY =
