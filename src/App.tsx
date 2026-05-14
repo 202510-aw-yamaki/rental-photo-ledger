@@ -1,5 +1,5 @@
-import { AppShell } from "./AppShell";
+import { ConsumerAppShell } from "./ConsumerAppShell";
 
 export function App() {
-  return <AppShell />;
+  return <ConsumerAppShell />;
 }

@@ -1,20 +1,20 @@
 export type FileNameTestCase = {
-  title: string
-  input: string
-  expected: string
-}
+  title: string;
+  input: string;
+  expected: string;
+};
 
 export type DateTimeTestCase = {
-  title: string
-  input: string | Date
-  expected: string
-}
+  title: string;
+  input: string | Date;
+  expected: string;
+};
 
 export const sanitizeFileNameCases: FileNameTestCase[] = [
   {
     title: "treat empty string as fallback name",
     input: "",
-    expected: "未指定"
+    expected: "未設定"
   },
   {
     title: "trim leading and trailing spaces",
@@ -46,7 +46,7 @@ export const sanitizeFileNameCases: FileNameTestCase[] = [
     input: "..dots...",
     expected: "dots___"
   }
-]
+];
 
 export const dateTimeCases: DateTimeTestCase[] = [
   {
@@ -74,4 +74,4 @@ export const dateTimeCases: DateTimeTestCase[] = [
     input: "invalid-date",
     expected: ""
   }
-]
+];

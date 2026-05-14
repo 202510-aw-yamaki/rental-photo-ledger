@@ -1,10 +1,12 @@
 import Dexie, { type Table } from "dexie";
-import { DEFAULT_PIN_CHECKLIST_ITEMS, PHOTO_CATEGORIES } from "./constants";
 import { getLocalDateInputValue } from "./lib/dates";
+import { PHOTO_CATEGORIES } from "./mvpConstants";
 import type {
   ChecklistItem,
+  CropRect,
   ExportHistory,
   FloorPlan,
+  FloorPlanSourceType,
   FloorPlanPin,
   PhotoCategory,
   PhotoRecord,
@@ -56,28 +58,39 @@ class LedgerDatabase extends Dexie {
             item.note = item.note ?? "";
           });
       });
+    this.version(3)
+      .stores(stores)
+      .upgrade(async (transaction) => {
+        await transaction
+          .table("properties")
+          .toCollection()
+          .modify((property) => {
+            const createdAt = typeof property.createdAt === "string" ? new Date(property.createdAt) : new Date();
+            property.recordDate = property.recordDate ?? getLocalDateInputValue(createdAt);
+            property.address = property.address ?? "";
+            property.moveOutDate = property.moveOutDate ?? "";
+          });
+        await transaction
+          .table("floorPlans")
+          .toCollection()
+          .modify((floorPlan) => {
+            floorPlan.sourceType = floorPlan.sourceType ?? "pdf";
+            floorPlan.mimeType = floorPlan.mimeType ?? "application/pdf";
+            floorPlan.naturalWidth = floorPlan.naturalWidth ?? 0;
+            floorPlan.naturalHeight = floorPlan.naturalHeight ?? 0;
+            floorPlan.cropRect = floorPlan.cropRect ?? null;
+          });
+      });
   }
 }
 
 export const db = new LedgerDatabase();
 
-const makePinChecklistItems = (pin: FloorPlanPin, timestamp = nowIso()): ChecklistItem[] =>
-  DEFAULT_PIN_CHECKLIST_ITEMS.map((label) => ({
-    id: createId("check"),
-    propertyId: pin.propertyId,
-    pinId: pin.id,
-    room: `ピン ${pin.label}`,
-    label,
-    isChecked: false,
-    note: "",
-    createdAt: timestamp,
-    updatedAt: timestamp
-  }));
-
 export async function createProperty(input: {
   name: string;
   moveInDate: string;
   moveOutDate?: string;
+  recordDate?: string;
 }): Promise<Property> {
   const timestamp = nowIso();
   const property: Property = {
@@ -86,6 +99,7 @@ export async function createProperty(input: {
     address: "",
     moveInDate: input.moveInDate,
     moveOutDate: input.moveOutDate ?? "",
+    recordDate: input.recordDate || getLocalDateInputValue(),
     createdAt: timestamp,
     updatedAt: timestamp
   };
@@ -134,15 +148,7 @@ export async function loadPropertyBundle(propertyId: string): Promise<PropertyBu
     db.checklistItems.where("propertyId").equals(propertyId).sortBy("room"),
     db.exportHistory.where("propertyId").equals(propertyId).reverse().sortBy("exportedAt")
   ]);
-  let checklistItems = initialChecklistItems;
-  const pinsWithChecklist = new Set(checklistItems.filter((item) => item.pinId).map((item) => item.pinId));
-  const pinsWithoutChecklist = pins.filter((pin) => !pinsWithChecklist.has(pin.id));
-
-  if (pinsWithoutChecklist.length > 0) {
-    const timestamp = nowIso();
-    await db.checklistItems.bulkAdd(pinsWithoutChecklist.flatMap((pin) => makePinChecklistItems(pin, timestamp)));
-    checklistItems = await db.checklistItems.where("propertyId").equals(propertyId).sortBy("room");
-  }
+  const checklistItems = initialChecklistItems;
 
   return {
     floorPlan: floorPlans.at(0) ?? null,
@@ -158,6 +164,11 @@ export async function saveFloorPlan(input: {
   fileName: string;
   fileBlob: Blob;
   pageCount: number;
+  sourceType?: FloorPlanSourceType;
+  mimeType?: string;
+  naturalWidth?: number;
+  naturalHeight?: number;
+  cropRect?: CropRect | null;
 }): Promise<FloorPlan> {
   const timestamp = nowIso();
   const floorPlan: FloorPlan = {
@@ -166,6 +177,11 @@ export async function saveFloorPlan(input: {
     fileName: input.fileName,
     fileBlob: input.fileBlob,
     pageCount: input.pageCount,
+    sourceType: input.sourceType ?? "pdf",
+    mimeType: input.mimeType ?? input.fileBlob.type ?? "application/pdf",
+    naturalWidth: input.naturalWidth ?? 0,
+    naturalHeight: input.naturalHeight ?? 0,
+    cropRect: input.cropRect ?? null,
     createdAt: timestamp,
     updatedAt: timestamp
   };
@@ -203,9 +219,8 @@ export async function addPin(input: {
     updatedAt: timestamp
   };
 
-  await db.transaction("rw", db.properties, db.floorPlanPins, db.checklistItems, async () => {
+  await db.transaction("rw", db.properties, db.floorPlanPins, async () => {
     await db.floorPlanPins.add(pin);
-    await db.checklistItems.bulkAdd(makePinChecklistItems(pin, timestamp));
     await touchProperty(input.propertyId);
   });
 

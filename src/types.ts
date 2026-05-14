@@ -11,6 +11,16 @@ export type Property = EntityBase & {
   address: string;
   moveInDate: string;
   moveOutDate: string;
+  recordDate: string;
+};
+
+export type FloorPlanSourceType = "pdf" | "image" | "cropped-image";
+
+export type CropRect = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 };
 
 export type FloorPlan = EntityBase & {
@@ -18,6 +28,11 @@ export type FloorPlan = EntityBase & {
   fileName: string;
   fileBlob: Blob;
   pageCount: number;
+  sourceType: FloorPlanSourceType;
+  mimeType: string;
+  naturalWidth: number;
+  naturalHeight: number;
+  cropRect: CropRect | null;
 };
 
 export type FloorPlanPin = EntityBase & {
@@ -29,23 +44,7 @@ export type FloorPlanPin = EntityBase & {
   y: number;
 };
 
-export type PhotoCategory =
-  | "壁"
-  | "床"
-  | "天井"
-  | "ドア"
-  | "窓"
-  | "収納"
-  | "キッチン"
-  | "浴室"
-  | "洗面"
-  | "トイレ"
-  | "水回り"
-  | "エアコン"
-  | "電気設備"
-  | "備え付け設備"
-  | "ベランダ"
-  | "その他";
+export type PhotoCategory = string;
 
 export type PhotoRecord = EntityBase & {
   propertyId: string;
